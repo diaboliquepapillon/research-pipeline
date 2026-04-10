@@ -44,6 +44,8 @@ research-pipeline/
 ├── tools/
 │   ├── search_tool.py
 │   └── vector_store.py
+├── web/ # static portfolio site (Netlify)
+├── netlify.toml         # Netlify build/publish config
 ├── app.py
 ├── ingest.py
 ├── requirements.txt
@@ -92,112 +94,46 @@ Add your UI screenshot or demo gif here:
 
 > If `docs/demo.gif` does not exist yet, capture one with your local run and place it there.
 
+## Netlify Website Setup
+
+This repository includes a static portfolio site in `web/` with Netlify config in `netlify.toml`.
+
+### Deploy with Netlify CLI
+
+1. Install CLI:
+
+   ```bash
+   npm install -g netlify-cli
+   ```
+
+2. Login:
+
+   ```bash
+   netlify login
+   ```
+
+3. Initialize this folder as a Netlify site:
+
+   ```bash
+   netlify init
+   ```
+
+4. Deploy preview:
+
+   ```bash
+   netlify deploy
+   ```
+
+5. Deploy production:
+
+   ```bash
+   netlify deploy --prod
+   ```
+
+After deploy, update the "Live App" button in `web/index.html` with your hosted Streamlit URL.
+
 ## Notes on Tooling and Reliability
 
 - Uses Python `logging` throughout for traceability.
 - Each agent has isolated responsibilities and explicit context passing.
 - Includes fallback behavior for planner output and search provider failures.
-# Multi-Agent Research Pipeline
-
-Portfolio-quality multi-agent system that orchestrates planning, tool-augmented search, local RAG retrieval, and report synthesis into a downloadable markdown output.
-
-## What this project does
-
-Given a user topic, the system runs a chain of specialized agents:
-
-1. **Planner Agent** decomposes the topic into sub-questions.
-2. **Search Agent** retrieves evidence from web search (or local mock corpus fallback).
-3. **RAG Agent** queries local ChromaDB vectors from ingested reference docs.
-4. **Writer Agent** synthesizes findings into a structured markdown report saved to `outputs/`.
-
-A Streamlit UI provides a simple interface to generate and download reports.
-
-## Architecture Overview
-
-```text
-User Topic (Streamlit)
-      |
-      v
-PlannerAgent
-  -> sub_questions
-      |
-      v
-SearchAgent ---------> tool: SearchTool (web/local docs)
-      |
-      +-------> RAGAgent -----> tool: VectorStore (ChromaDB)
-      |
-      v
-WriterAgent
-  -> outputs/report-<topic>-<timestamp>.md
-```
-
-This follows core patterns from the Microsoft `ai-agents-for-beginners` lessons:
-- intro to agents and role specialization
-- agentic RAG orchestration
-- trustworthy tool use and error handling
-- planner-first agent design
-
-## Project Structure
-
-```text
-research-pipeline/
-├── agents/
-│   ├── planner.py
-│   ├── searcher.py
-│   ├── rag_agent.py
-│   ├── writer.py
-│   └── llm_client.py
-├── tools/
-│   ├── search_tool.py
-│   └── vector_store.py
-├── app.py
-├── ingest.py
-├── requirements.txt
-├── .env.example
-└── README.md
-```
-
-## Setup
-
-1. Create and activate a Python 3.12 virtual environment.
-2. Install dependencies:
-
-```bash
-pip install -r requirements.txt
-```
-
-3. Create `.env` from sample and fill in keys:
-
-```bash
-cp .env.example .env
-```
-
-4. Add reference docs (`.md`/`.txt`) to `reference_docs/`.
-
-## Ingest local docs into ChromaDB
-
-```bash
-python ingest.py --reference-dir reference_docs --persist-dir .chroma --collection-name research_docs
-```
-
-## Run the Streamlit app
-
-```bash
-streamlit run app.py
-```
-
-## Output
-
-- Generated reports are written to `outputs/` as markdown files.
-- The UI also shows a preview and provides a download button.
-
-## Demo / Screenshot
-
-Add a screenshot or short GIF after first run:
-
-- Suggested path: `docs/demo.png` or `docs/demo.gif`
-- Embed with:
-
-```markdown
-![Research Pipeline Demo](docs/demo.png)
-```

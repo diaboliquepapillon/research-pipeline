@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Multi-Agent Research Pipeline</title>
+    <meta
+      name="description"
+      content="Portfolio project: Planner, Search, RAG, and Writer agents with Streamlit UI."
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="container">
+      <p class="eyebrow">Portfolio Project</p>
+      <h1>Multi-Agent Research Pipeline</h1>
+      <p class="lead">
+        A production-style AI system that decomposes a topic, gathers evidence,
+        retrieves local knowledge via RAG, and generates a markdown report.
+      </p>
+
+      <section class="card-grid">
+        <article class="card">
+          <h2>Planner Agent</h2>
+          <p>Breaks a topic into focused sub-questions.</p>
+        </article>
+        <article class="card">
+          <h2>Search Agent</h2>
+          <p>Retrieves external evidence per sub-question.</p>
+        </article>
+        <article class="card">
+          <h2>RAG Agent</h2>
+          <p>Queries ChromaDB for local reference context.</p>
+        </article>
+        <article class="card">
+          <h2>Writer Agent</h2>
+          <p>Synthesizes findings into a downloadable markdown report.</p>
+        </article>
+      </section>
+
+      <section class="actions">
+        <a class="btn primary" href="https://github.com/" target="_blank" rel="noreferrer">
+          View Source Repository
+        </a>
+        <a class="btn" href="#" title="Replace with your deployed Streamlit URL">
+          Live App (set your Streamlit URL)
+        </a>
+      </section>
+
+      <section class="how-to">
+        <h3>Run locally</h3>
+        <pre><code>pip install -r requirements.txt
+python ingest.py --docs-path data/reference_docs
+streamlit run app.py</code></pre>
+      </section>
+    </main>
+  </body>
+</html>
