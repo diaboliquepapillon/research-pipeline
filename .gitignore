@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.chroma/
+outputs/*.md
+!.gitkeep
+.DS_Store
+streamlit_secrets.toml
