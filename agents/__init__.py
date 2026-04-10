@@ -1,1 +1,1 @@
-"""Multi-agent research pipeline agents."""
+"""Agent modules for research pipeline."""

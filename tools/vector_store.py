@@ -1,163 +1,157 @@
-"""
-ChromaDB helpers: persistent collection, ingest text files, and similarity search.
-
-Designed so RAG can be exercised independently of agents (see ``ingest.py``).
-"""
+"""ChromaDB vector store helpers for the research pipeline."""
 
 from __future__ import annotations
 
+import hashlib
 import logging
-import os
-import threading
+import re
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterable
 
 import chromadb
-from chromadb.api import Collection
+from chromadb.api.models.Collection import Collection
 from chromadb.config import Settings
-from chromadb.utils.embedding_functions.onnx_mini_lm_l6_v2 import ONNXMiniLM_L6_V2
+from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
 
-logger = logging.getLogger(__name__)
-
-# Chroma's DefaultEmbeddingFunction delegates with ``ONNXMiniLM_L6_V2()(input)``, which
-# constructs a *new* ONNX runtime session on every embed call. That dominated query
-# latency in profiling; reuse one embedder for the process instead.
-_shared_embedder: ONNXMiniLM_L6_V2 | None = None
-_embedder_lock = threading.Lock()
+LOGGER = logging.getLogger(__name__)
 
 
-def _get_shared_embedder() -> ONNXMiniLM_L6_V2:
-    global _shared_embedder
-    if _shared_embedder is None:
-        with _embedder_lock:
-            if _shared_embedder is None:
-                _shared_embedder = ONNXMiniLM_L6_V2()
-    return _shared_embedder
+def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 150) -> list[str]:
+    """Split text into overlapping character chunks."""
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be > 0")
+    if overlap < 0:
+        raise ValueError("overlap must be >= 0")
+    if overlap >= chunk_size:
+        raise ValueError("overlap must be smaller than chunk_size")
 
-DEFAULT_PERSIST_DIR = ".chroma"
-DEFAULT_COLLECTION = "research_refs"
-
-
-def _persist_dir() -> str:
-    return os.getenv("CHROMA_PERSIST_DIR", DEFAULT_PERSIST_DIR)
-
-
-def _collection_name() -> str:
-    return os.getenv("CHROMA_COLLECTION_NAME", DEFAULT_COLLECTION)
-
-
-class VectorStore:
-    """Thin wrapper around a persistent Chroma collection with default embeddings."""
-
-    def __init__(
-        self,
-        persist_directory: str | None = None,
-        collection_name: str | None = None,
-    ) -> None:
-        self.persist_directory = persist_directory or _persist_dir()
-        self.collection_name = collection_name or _collection_name()
-        self._embedding_fn = _get_shared_embedder()
-        self._client = chromadb.PersistentClient(
-            path=self.persist_directory,
-            settings=Settings(anonymized_telemetry=False),
-        )
-        self._collection: Collection = self._client.get_or_create_collection(
-            name=self.collection_name,
-            embedding_function=self._embedding_fn,
-        )
-        # Avoid repeated SQLite/metadata round-trips when planner/RAG call count() often.
-        self._count_cache: int | None = None
-        logger.debug(
-            "VectorStore ready at %s collection=%s",
-            self.persist_directory,
-            self.collection_name,
-        )
-
-    @property
-    def collection(self) -> Collection:
-        return self._collection
-
-    def count(self) -> int:
-        if self._count_cache is None:
-            self._count_cache = self._collection.count()
-        return self._count_cache
-
-    def _invalidate_count_cache(self) -> None:
-        self._count_cache = None
-
-    def add_text_chunks(
-        self,
-        texts: list[str],
-        ids: list[str],
-        metadatas: list[dict] | None = None,
-    ) -> None:
-        """Add or update documents (upsert by id)."""
-        if len(texts) != len(ids):
-            raise ValueError("texts and ids must have the same length")
-        self._collection.upsert(documents=texts, ids=ids, metadatas=metadatas)
-        self._invalidate_count_cache()
-        logger.info("Upserted %d chunks into %s", len(ids), self.collection_name)
-
-    def query(self, query_text: str, n_results: int = 5) -> list[dict]:
-        """
-        Run similarity search and return structured hits.
-
-        Each hit includes ``document``, ``metadata``, and ``distance`` (if present).
-        """
-        n = max(1, min(n_results, 50))
-        if self.count() == 0:
-            logger.warning("Chroma collection is empty; RAG will return no hits")
-            return []
-
-        raw = self._collection.query(query_texts=[query_text], n_results=n)
-        docs = (raw.get("documents") or [[]])[0]
-        metas = (raw.get("metadatas") or [[]])[0]
-        dists = (raw.get("distances") or [[]])[0] if raw.get("distances") else [None] * len(docs)
-
-        results: list[dict] = []
-        for i, doc in enumerate(docs):
-            results.append(
-                {
-                    "document": doc,
-                    "metadata": metas[i] if i < len(metas) else {},
-                    "distance": dists[i] if i < len(dists) else None,
-                }
-            )
-        return results
-
-    def format_query_results(self, query_text: str, n_results: int = 5) -> str:
-        """Human-readable bundle of retrieved passages for LLM context."""
-        hits = self.query(query_text, n_results=n_results)
-        if not hits:
-            return "(No reference documents matched this query in the vector store.)"
-        parts: list[str] = []
-        for i, h in enumerate(hits, start=1):
-            meta = h.get("metadata") or {}
-            src = meta.get("source", "unknown")
-            parts.append(f"--- Source {i} ({src}) ---\n{h['document']}")
-        return "\n\n".join(parts)
-
-
-def read_text_file(path: Path) -> str:
-    """Load a UTF-8 text or markdown file."""
-    return path.read_text(encoding="utf-8", errors="replace")
-
-
-def chunk_text(text: str, max_chars: int = 1200, overlap: int = 150) -> list[str]:
-    """Simple character-based chunking with overlap for long pages."""
-    text = text.strip()
-    if len(text) <= max_chars:
-        return [text] if text else []
+    normalized = re.sub(r"\s+", " ", text).strip()
+    if not normalized:
+        return []
 
     chunks: list[str] = []
     start = 0
-    while start < len(text):
-        end = min(start + max_chars, len(text))
-        chunk = text[start:end].strip()
-        if chunk:
-            chunks.append(chunk)
-        if end >= len(text):
+    step = chunk_size - overlap
+    while start < len(normalized):
+        end = min(start + chunk_size, len(normalized))
+        chunks.append(normalized[start:end])
+        if end == len(normalized):
             break
-        start = end - overlap
-        if start < 0:
-            start = 0
+        start += step
     return chunks
+
+
+@dataclass(slots=True)
+class RetrievedChunk:
+    """A normalized retrieval record from Chroma query output."""
+
+    doc_id: str
+    content: str
+    source: str
+    score: float
+
+
+class VectorStore:
+    """Small wrapper around ChromaDB with project-friendly defaults."""
+
+    def __init__(self, persist_directory: str = ".chroma", collection_name: str = "research_docs") -> None:
+        self.persist_directory = persist_directory
+        self.collection_name = collection_name
+        self._client = chromadb.PersistentClient(
+            path=persist_directory,
+            settings=Settings(anonymized_telemetry=False),
+        )
+        self._collection: Collection = self._client.get_or_create_collection(
+            name=collection_name,
+            embedding_function=DefaultEmbeddingFunction(),
+            metadata={"purpose": "research_pipeline_rag"},
+        )
+        self._count_cache: int | None = None
+
+    @staticmethod
+    def _build_chunk_id(source: str, chunk_index: int, content: str) -> str:
+        fingerprint = hashlib.sha1(content.encode("utf-8")).hexdigest()[:10]
+        return f"{Path(source).name}-{chunk_index}-{fingerprint}"
+
+    def add_text_chunks(
+        self,
+        chunks: Iterable[str],
+        ids: Iterable[str],
+        metadatas: Iterable[dict[str, str]] | None = None,
+    ) -> None:
+        """Add pre-computed chunks and ids to the collection."""
+        chunk_list = list(chunks)
+        id_list = list(ids)
+        if not chunk_list:
+            return
+        if len(chunk_list) != len(id_list):
+            raise ValueError("chunks and ids lengths must match")
+
+        metadata_list = list(metadatas) if metadatas is not None else [{"source": "unknown"} for _ in chunk_list]
+        if len(metadata_list) != len(chunk_list):
+            raise ValueError("metadatas length must match chunks")
+
+        self._collection.upsert(
+            ids=id_list,
+            documents=chunk_list,
+            metadatas=metadata_list,
+        )
+        self._count_cache = None
+
+    def add_documents(self, docs: list[tuple[str, str]], chunk_size: int = 1000, overlap: int = 150) -> int:
+        """
+        Ingest documents provided as (source_name, text) pairs.
+
+        Returns number of chunks added.
+        """
+        chunk_texts: list[str] = []
+        chunk_ids: list[str] = []
+        chunk_metadata: list[dict[str, str]] = []
+
+        for source, body in docs:
+            chunks = chunk_text(body, chunk_size=chunk_size, overlap=overlap)
+            for idx, ch in enumerate(chunks):
+                chunk_texts.append(ch)
+                chunk_ids.append(self._build_chunk_id(source, idx, ch))
+                chunk_metadata.append({"source": source, "chunk_index": str(idx)})
+
+        self.add_text_chunks(chunk_texts, chunk_ids, chunk_metadata)
+        LOGGER.info("Ingested %s chunks into collection '%s'.", len(chunk_texts), self.collection_name)
+        return len(chunk_texts)
+
+    def query(self, query_text: str, top_k: int = 5) -> list[RetrievedChunk]:
+        """Retrieve top-k chunks relevant to query_text."""
+        if not query_text.strip():
+            return []
+
+        response = self._collection.query(query_texts=[query_text], n_results=top_k)
+        ids = response.get("ids", [[]])[0]
+        docs = response.get("documents", [[]])[0]
+        metas = response.get("metadatas", [[]])[0]
+        distances = response.get("distances", [[]])[0]
+
+        results: list[RetrievedChunk] = []
+        for doc_id, doc, meta, distance in zip(ids, docs, metas, distances, strict=False):
+            source = (meta or {}).get("source", "unknown")
+            score = 1.0 / (1.0 + float(distance)) if distance is not None else 0.0
+            results.append(RetrievedChunk(doc_id=doc_id, content=doc, source=source, score=score))
+        return results
+
+    def format_query_results(self, query_text: str, top_k: int = 5) -> str:
+        """Format retrieval output for prompt consumption."""
+        results = self.query(query_text=query_text, top_k=top_k)
+        if not results:
+            return "No relevant RAG context found."
+        lines: list[str] = []
+        for i, item in enumerate(results, start=1):
+            lines.append(
+                f"[{i}] source={item.source} score={item.score:.3f}\n{item.content}"
+            )
+        return "\n\n".join(lines)
+
+    def count(self) -> int:
+        """Return number of vectors in the collection (cached)."""
+        if self._count_cache is None:
+            self._count_cache = int(self._collection.count())
+        return self._count_cache

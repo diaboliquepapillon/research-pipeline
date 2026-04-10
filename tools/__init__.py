@@ -1,1 +1,1 @@
-"""Tools for search and vector retrieval."""
+"""Tooling modules for research pipeline."""

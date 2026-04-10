@@ -1,15 +1,5 @@
-# Microsoft Agent Framework (MAF) — https://github.com/microsoft/agent-framework
-agent-framework>=1.0.0
-
-# Vector store & UI
-chromadb>=0.5.0
-streamlit>=1.40.0
-
-# Config & HTTP
-python-dotenv>=1.0.0
-httpx>=0.27.0
-
-# Web search (optional; mock fallback if unavailable)
-duckduckgo-search>=6.0.0
-
-pydantic>=2.0
+python-dotenv
+streamlit
+chromadb
+openai
+requests

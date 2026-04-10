@@ -1,91 +1,113 @@
-"""
-Writer Agent: synthesizes planner + search + RAG context into a markdown report file.
-"""
+"""Writer agent: synthesize search and RAG evidence into markdown output."""
 
 from __future__ import annotations
 
 import logging
-import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
 
-if TYPE_CHECKING:
-    from agent_framework.openai import OpenAIChatClient
+from agents.llm_client import LLMClient
 
-logger = logging.getLogger(__name__)
-
-OUTPUT_DIR = Path("outputs")
-
-
-def _slugify(topic: str) -> str:
-    s = topic.lower().strip()
-    s = re.sub(r"[^a-z0-9]+", "-", s)
-    return (s[:60] or "report").strip("-")
+LOGGER = logging.getLogger(__name__)
 
 
 class WriterAgent:
-    """Produces a polished markdown report and persists it under ``outputs/``."""
+    """Generate and persist a structured markdown research report."""
 
-    def __init__(self, chat_client: OpenAIChatClient) -> None:
-        self._agent = chat_client.as_agent(
-            name="WriterAgent",
-            instructions=(
-                "You write professional technical markdown reports. "
-                "Use clear headings (##, ###), bullet lists where helpful, and a short "
-                "executive summary. Distinguish **Web findings** vs **Reference library (RAG)** "
-                "sections per sub-question when sources differ. "
-                "End with **Open questions** and **Suggested next steps**. "
-                "Do not invent citations; reflect only the provided context."
-            ),
+    def __init__(self, llm: LLMClient | None = None, output_dir: str = 'outputs') -> None:
+        self.llm = llm or LLMClient()
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+    def _build_prompt(
+        self,
+        topic: str,
+        sub_questions: list[str],
+        search_context: dict[str, list[dict[str, str]]],
+        rag_context: dict[str, list[dict[str, str]]],
+    ) -> str:
+        lines: list[str] = [f"Topic: {topic}", '', 'Sub-questions and evidence:']
+
+        for idx, q in enumerate(sub_questions, start=1):
+            lines.append(f"\n{idx}. {q}")
+            lines.append('Web/Tool Evidence:')
+            for item in search_context.get(q, []):
+                lines.append(
+                    f"- {item.get('title', '')} | {item.get('url', '')} | "
+                    f"{item.get('source', '')}\n  {item.get('snippet', '')}"
+                )
+
+            lines.append('Local RAG Evidence:')
+            for item in rag_context.get(q, []):
+                lines.append(
+                    f"- source={item.get('source', '')} score={item.get('score', '')}\n"
+                    f"  {item.get('content', '')[:500]}"
+                )
+
+        return '\n'.join(lines)
+
+    def run(
+        self,
+        topic: str,
+        sub_questions: list[str],
+        search_context: dict[str, list[dict[str, str]]],
+        rag_context: dict[str, list[dict[str, str]]],
+    ) -> Path:
+        """Create and save the final markdown report to /outputs."""
+        system_prompt = (
+            "You are a technical research writer. "
+            "Produce a clear markdown report with these sections exactly: "
+            "# Title, ## Executive Summary, ## Findings, ## Recommendations, ## Sources. "
+            "In Findings, structure by sub-question and cite evidence snippets."
         )
+        user_prompt = self._build_prompt(topic, sub_questions, search_context, rag_context)
 
-    def _build_prompt(self, topic: str, findings: list[dict[str, Any]]) -> str:
-        lines = [
-            f"# Report task",
-            f"Topic: {topic}",
-            "",
-            "## Assembled findings (from upstream agents)",
-            "",
-        ]
-        for i, block in enumerate(findings, start=1):
-            sq = block.get("sub_question", "")
-            lines.append(f"### Block {i}: {sq}")
-            lines.append("#### Web search synthesis")
-            lines.append(block.get("web", "").strip() or "_None_")
-            lines.append("")
-            lines.append("#### RAG / reference library synthesis")
-            lines.append(block.get("rag", "").strip() or "_None_")
-            lines.append("")
-        lines.append("Write the final markdown report now.")
-        return "\n".join(lines)
-
-    async def write_report(self, topic: str, findings: list[dict[str, Any]]) -> Path:
-        """
-        Generate markdown from structured *findings* and save to ``outputs/``.
-
-        Returns:
-            Path to the written ``.md`` file.
-        """
-        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-        filename = f"{_slugify(topic)}-{ts}.md"
-        out_path = OUTPUT_DIR / filename
-
-        logger.info("Writer: topic=%r -> %s", topic[:80], out_path)
-        prompt = self._build_prompt(topic, findings)
         try:
-            resp = await self._agent.run(prompt)
-            body = resp.text.strip()
-            if not body:
-                body = "_Report generation returned empty content._\n"
+            report_md = self.llm.complete(system_prompt=system_prompt, user_prompt=user_prompt, temperature=0.2)
+            if not report_md.strip().startswith('#'):
+                report_md = f"# Research Report: {topic}\n\n" + report_md
         except Exception as exc:
-            logger.exception("Writer agent failed: %s", exc)
-            body = f"# Report\n\n_(Writer error: {exc})_\n"
+            LOGGER.exception('Writer LLM failed, creating fallback report: %s', exc)
+            report_md = self._fallback_report(topic, sub_questions, search_context, rag_context)
 
-        header = (
-            f"<!-- generated: {datetime.now(timezone.utc).isoformat()} topic: {topic[:200]} -->\n"
-        )
-        out_path.write_text(header + body + "\n", encoding="utf-8")
-        logger.info("Wrote report (%d chars) to %s", len(body), out_path)
+        ts = datetime.now(UTC).strftime('%Y%m%d-%H%M%S')
+        safe_topic = ''.join(ch for ch in topic.lower() if ch.isalnum() or ch in {'-', '_'})[:40] or 'topic'
+        out_path = self.output_dir / f"report-{safe_topic}-{ts}.md"
+        out_path.write_text(report_md, encoding='utf-8')
         return out_path
+
+    @staticmethod
+    def _fallback_report(
+        topic: str,
+        sub_questions: list[str],
+        search_context: dict[str, list[dict[str, str]]],
+        rag_context: dict[str, list[dict[str, str]]],
+    ) -> str:
+        lines = [
+            f"# Research Report: {topic}",
+            '',
+            '## Executive Summary',
+            'LLM generation was unavailable; this report summarizes collected evidence directly.',
+            '',
+            '## Findings',
+        ]
+        for i, q in enumerate(sub_questions, start=1):
+            lines.append(f"### {i}. {q}")
+            lines.append('**Search Evidence**')
+            for item in search_context.get(q, []):
+                lines.append(f"- {item.get('title','')} ({item.get('url','')})")
+            lines.append('**RAG Evidence**')
+            for item in rag_context.get(q, []):
+                lines.append(f"- {item.get('source','')} (score={item.get('score','')})")
+            lines.append('')
+
+        lines += [
+            '## Recommendations',
+            '- Validate key claims with primary sources before decision-making.',
+            '- Expand `reference_docs/` and rerun ingestion to improve local-context coverage.',
+            '',
+            '## Sources',
+            '- Tool search results listed under each finding.',
+            '- Local ChromaDB chunks from ingested docs.',
+        ]
+        return '\n'.join(lines)

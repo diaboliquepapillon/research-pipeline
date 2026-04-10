@@ -1,98 +1,89 @@
-"""
-Streamlit UI for the multi-agent research pipeline.
-
-Run from the project root::
-
-    streamlit run app.py
-"""
+"""Streamlit app for the multi-agent research pipeline."""
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from pathlib import Path
 
 import streamlit as st
 from dotenv import load_dotenv
 
-load_dotenv()
+from agents.planner import PlannerAgent
+from agents.rag_agent import RAGAgent
+from agents.searcher import SearchAgent
+from agents.writer import WriterAgent
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(levelname)s %(name)s: %(message)s",
+    format='%(asctime)s | %(levelname)s | %(name)s | %(message)s',
 )
+LOGGER = logging.getLogger('app')
 
-logger = logging.getLogger("app")
+
+def run_pipeline(topic: str) -> tuple[Path, dict[str, object]]:
+    """Run planner -> searcher -> rag -> writer and return report path plus context."""
+    planner = PlannerAgent()
+    searcher = SearchAgent()
+    rag = RAGAgent()
+    writer = WriterAgent()
+
+    sub_questions = planner.run(topic)
+    search_context = searcher.run(sub_questions)
+    rag_context = rag.run(sub_questions)
+    report_path = writer.run(
+        topic=topic,
+        sub_questions=sub_questions,
+        search_context=search_context,
+        rag_context=rag_context,
+    )
+
+    context = {
+        'sub_questions': sub_questions,
+        'search_context': search_context,
+        'rag_context': rag_context,
+    }
+    return report_path, context
 
 
 def main() -> None:
-    st.set_page_config(page_title="Research Pipeline", layout="wide")
-    st.title("Multi-agent research pipeline")
-    st.markdown(
-        "Planner → Search (web) → RAG (ChromaDB) → Writer. "
-        "Requires API keys in `.env` (see `.env.example`)."
-    )
+    load_dotenv()
+    st.set_page_config(page_title='Multi-Agent Research Pipeline', layout='wide')
 
-    topic = st.text_area(
-        "Research topic",
-        placeholder="e.g. Compare retrieval options for agentic RAG in 2026",
-        height=100,
-    )
+    st.title('Multi-Agent Research Pipeline')
+    st.caption('Planner -> Search -> RAG -> Writer')
 
-    col1, col2 = st.columns(2)
-    with col1:
-        run_btn = st.button("Run pipeline", type="primary")
-    with col2:
-        show_debug = st.checkbox("Show intermediate context", value=False)
+    topic = st.text_input('Research topic', placeholder='e.g., retrieval-augmented generation for enterprise search')
 
-    if run_btn:
+    if st.button('Generate Report', type='primary'):
         if not topic.strip():
-            st.warning("Enter a topic first.")
+            st.warning('Please provide a research topic.')
             return
 
-        with st.spinner("Running agents (this may take a minute)…"):
+        with st.spinner('Running agents...'):
             try:
-                from pipeline import ResearchPipeline
-
-                async def _go() -> tuple[Path, dict]:
-                    pipe = ResearchPipeline()
-                    return await pipe.run(topic.strip())
-
-                report_path, ctx = asyncio.run(_go())
-            except ValueError as exc:
-                st.error(str(exc))
-                logger.warning("Configuration error: %s", exc)
-                return
+                report_path, context = run_pipeline(topic)
             except Exception as exc:
-                st.exception(exc)
-                logger.exception("Pipeline failed")
+                LOGGER.exception('Pipeline failed: %s', exc)
+                st.error(f'Pipeline failed: {exc}')
                 return
 
-        st.success(f"Report saved to `{report_path}`")
-        try:
-            data = report_path.read_bytes()
-            st.download_button(
-                label="Download markdown report",
-                data=data,
-                file_name=report_path.name,
-                mime="text/markdown",
-            )
-        except OSError as exc:
-            st.warning(f"Could not read report for download: {exc}")
+        st.success(f'Report generated: {report_path.name}')
 
-        with st.expander("Final report preview", expanded=True):
-            st.markdown(report_path.read_text(encoding="utf-8"))
+        st.subheader('Planned sub-questions')
+        for i, q in enumerate(context['sub_questions'], start=1):
+            st.markdown(f"{i}. {q}")
 
-        if show_debug:
-            with st.expander("Debug: planner + per-step context"):
-                st.json(
-                    {
-                        "sub_questions": ctx.get("sub_questions"),
-                        "planner_rationale": ctx.get("planner_rationale"),
-                        "findings": ctx.get("findings"),
-                    }
-                )
+        report_text = report_path.read_text(encoding='utf-8')
+        st.subheader('Report Preview')
+        st.markdown(report_text)
+
+        st.download_button(
+            label='Download report (.md)',
+            data=report_text,
+            file_name=report_path.name,
+            mime='text/markdown',
+        )
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

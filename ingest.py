@@ -1,81 +1,76 @@
-#!/usr/bin/env python3
-"""
-Ingest reference documents (.txt, .md) from a directory into ChromaDB.
-
-Usage:
-    python ingest.py --path ./reference_docs
-"""
+"""Ingest reference documents from `reference_docs/` into ChromaDB."""
 
 from __future__ import annotations
 
 import argparse
 import logging
-import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-from tools.vector_store import VectorStore, chunk_text, read_text_file
+from tools.vector_store import VectorStore
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-logger = logging.getLogger("ingest")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+)
+LOGGER = logging.getLogger("ingest")
 
 
-def ingest_directory(vs: VectorStore, root: Path) -> int:
-    """Ingest all supported files under ``root``. Returns number of chunks added."""
-    patterns = ("*.md", "*.txt")
-    files: list[Path] = []
-    for pat in patterns:
-        files.extend(sorted(root.rglob(pat)))
-    if not files:
-        logger.warning("No .md or .txt files found under %s", root)
-        return 0
-
-    texts: list[str] = []
-    ids: list[str] = []
-    metas: list[dict] = []
-    for fp in files:
-        try:
-            content = read_text_file(fp)
-        except OSError as exc:
-            logger.error("Failed to read %s: %s", fp, exc)
+def load_reference_documents(reference_dir: Path) -> list[tuple[str, str]]:
+    """Load text/markdown documents from a directory recursively."""
+    docs: list[tuple[str, str]] = []
+    for path in reference_dir.rglob("*"):
+        if path.suffix.lower() not in {".txt", ".md"}:
             continue
-        rel = str(fp.relative_to(root))
-        for i, chunk in enumerate(chunk_text(content)):
-            cid = f"{rel}::chunk-{i}"
-            texts.append(chunk)
-            ids.append(cid)
-            metas.append({"source": rel, "chunk_index": i})
+        if not path.is_file():
+            continue
+        content = path.read_text(encoding="utf-8").strip()
+        if content:
+            docs.append((str(path.relative_to(reference_dir)), content))
+    return docs
 
-    if not texts:
+
+def run_ingest(
+    reference_dir: Path,
+    persist_directory: str,
+    collection_name: str,
+    chunk_size: int,
+    overlap: int,
+) -> int:
+    """Read source docs and push chunks to Chroma."""
+    docs = load_reference_documents(reference_dir=reference_dir)
+    if not docs:
+        LOGGER.warning("No documents found in %s", reference_dir)
         return 0
 
-    vs.add_text_chunks(texts, ids, metas)
-    return len(texts)
+    store = VectorStore(persist_directory=persist_directory, collection_name=collection_name)
+    added = store.add_documents(docs=docs, chunk_size=chunk_size, overlap=overlap)
+    LOGGER.info("Done. Added %s chunks from %s documents.", added, len(docs))
+    return added
 
 
-def main() -> int:
-    load_dotenv()
-    parser = argparse.ArgumentParser(description="Ingest reference docs into ChromaDB")
-    parser.add_argument(
-        "--path",
-        type=Path,
-        default=Path("reference_docs"),
-        help="Directory containing .md and .txt files (default: ./reference_docs)",
-    )
-    args = parser.parse_args()
-    root: Path = args.path.resolve()
-    if not root.is_dir():
-        logger.error("Not a directory: %s", root)
-        return 1
-
-    vs = VectorStore()
-    before = vs.count()
-    n = ingest_directory(vs, root)
-    after = vs.count()
-    logger.info("Ingest complete: %d new chunks written (collection size %d -> %d)", n, before, after)
-    return 0
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Ingest docs into ChromaDB")
+    parser.add_argument("--reference-dir", default="reference_docs")
+    parser.add_argument("--persist-dir", default=".chroma")
+    parser.add_argument("--collection-name", default="research_docs")
+    parser.add_argument("--chunk-size", type=int, default=1000)
+    parser.add_argument("--overlap", type=int, default=150)
+    return parser.parse_args()
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    load_dotenv()
+    args = parse_args()
+    try:
+        run_ingest(
+            reference_dir=Path(args.reference_dir),
+            persist_directory=args.persist_dir,
+            collection_name=args.collection_name,
+            chunk_size=args.chunk_size,
+            overlap=args.overlap,
+        )
+    except Exception as exc:  # pragma: no cover
+        LOGGER.exception("Ingestion failed: %s", exc)
+        raise SystemExit(1) from exc
