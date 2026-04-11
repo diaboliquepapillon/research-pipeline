@@ -39,18 +39,29 @@
       </section>
 
       <section class="actions">
-        <a class="btn primary" href="https://github.com/" target="_blank" rel="noreferrer">
-          View Source Repository
+        <a
+          class="btn primary"
+          href="https://github.com/diaboliquepapillon/research-pipeline"
+          target="_blank"
+          rel="noreferrer"
+        >
+          View source repository
         </a>
-        <a class="btn" href="#" title="Replace with your deployed Streamlit URL">
-          Live App (set your Streamlit URL)
+        <a
+          class="btn"
+          href="https://blank-app-szyqe48k1ag.streamlit.app"
+          target="_blank"
+          rel="noreferrer"
+        >
+          Open Streamlit app
         </a>
       </section>
 
       <section class="how-to">
         <h3>Run locally</h3>
         <pre><code>pip install -r requirements.txt
-python ingest.py --docs-path data/reference_docs
+cp .env.example .env
+python ingest.py --reference-dir reference_docs
 streamlit run app.py</code></pre>
       </section>
     </main>
