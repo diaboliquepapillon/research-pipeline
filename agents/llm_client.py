@@ -1,4 +1,4 @@
-"""LLM backend abstraction for Azure Foundry or OpenAI fallback."""
+"""LLM backend abstraction: OpenAI, Azure OpenAI, or OpenRouter (OpenAI-compatible API)."""
 
 from __future__ import annotations
 
@@ -43,6 +43,26 @@ class LLMClient:
                 base_url=f"{endpoint}/openai/deployments/{self.config.model}",
                 default_query={"api-version": api_version},
                 default_headers={"api-key": api_key},
+            )
+        if provider == "openrouter":
+            base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
+            api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
+            if not api_key:
+                raise ValueError(
+                    "OpenRouter selected (LLM_PROVIDER=openrouter) but OPENROUTER_API_KEY or "
+                    "OPENAI_API_KEY is missing in environment"
+                )
+            extra_headers: dict[str, str] = {}
+            ref = os.getenv("OPENROUTER_HTTP_REFERER")
+            title = os.getenv("OPENROUTER_APP_TITLE")
+            if ref:
+                extra_headers["HTTP-Referer"] = ref
+            if title:
+                extra_headers["X-Title"] = title
+            return OpenAI(
+                api_key=api_key,
+                base_url=base_url,
+                default_headers=extra_headers or None,
             )
         return OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
